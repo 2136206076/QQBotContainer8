@@ -27,7 +27,13 @@ class DeployService : Service() {
         fun go(ctx: Context, act: String, qqSrc: String = "") {
             val i = Intent(ctx, DeployService::class.java)
                 .putExtra(ACT, act).putExtra(QQ_SRC, qqSrc)
-            if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i) else ctx.startService(i)
+            try {
+                if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i) else ctx.startService(i)
+            } catch (e: Throwable) {
+                CrashHandler.record("启动服务失败", e)
+                LogBus.log("✗ 服务启动失败：${e.javaClass.simpleName}: ${e.message}")
+                LogBus.log("  常见原因：电池优化限制了后台启动。去系统设置把本 App 设为「不受限制」")
+            }
         }
     }
 
@@ -35,27 +41,35 @@ class DeployService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        val nm = getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CH) == null) {
-            nm.createNotificationChannel(
-                NotificationChannel(CH, "QQ 机器人容器", NotificationManager.IMPORTANCE_LOW)
-            )
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CH) == null) {
+                nm.createNotificationChannel(
+                    NotificationChannel(CH, "QQ 机器人容器", NotificationManager.IMPORTANCE_LOW)
+                )
+            }
+            val n: Notification = NotificationCompat.Builder(this, CH)
+                .setContentTitle("QQ 机器人容器")
+                .setContentText("正在运行，保持这个通知可显著降低被系统回收的概率")
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setOngoing(true)
+                .build()
+            startForeground(1, n)
+        } catch (e: Throwable) {
+            // 通知权限没给 / 前台服务受限：不要让整个 App 崩掉，降级继续跑
+            CrashHandler.record("startForeground 失败（前台服务降级，不影响部署逻辑）", e)
+            LogBus.log("⚠ 前台服务启动失败：${e.message}（不影响部署，但更容易被系统回收）")
         }
-        val n: Notification = NotificationCompat.Builder(this, CH)
-            .setContentTitle("QQ 机器人容器")
-            .setContentText("正在运行，保持这个通知可显著降低被系统回收的概率")
-            .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setOngoing(true)
-            .build()
-        startForeground(1, n)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val act = intent?.getStringExtra(ACT) ?: START
         val qqSrc = intent?.getStringExtra(QQ_SRC) ?: ""
         thread(name = "deploy-$act") {
-            try { run(act, qqSrc) } catch (e: Exception) {
-                LogBus.log("✗ 异常：${e.message}")
+            try { run(act, qqSrc) } catch (e: Throwable) {
+                CrashHandler.record("执行 $act 时异常", e)
+                LogBus.log("✗ 异常：${e.javaClass.simpleName}: ${e.message}")
+                e.stackTrace.take(6).forEach { LogBus.log("    at $it") }
             } finally { LogBus.log("== 完成：$act ==") }
         }
         return START_STICKY

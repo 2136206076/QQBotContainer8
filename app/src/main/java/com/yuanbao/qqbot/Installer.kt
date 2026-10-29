@@ -46,6 +46,15 @@ object Installer {
 
     // ---------- 步骤 1：rootfs ----------
     fun ensureRootfs(ctx: Context, url: String): Boolean {
+        return try { ensureRootfsInner(ctx, url) }
+        catch (e: Throwable) {
+            CrashHandler.record("ensureRootfs($url)", e)
+            LogBus.log("✗ rootfs 处理异常：${e.javaClass.simpleName}: ${e.message}")
+            false
+        }
+    }
+
+    private fun ensureRootfsInner(ctx: Context, url: String): Boolean {
         val r = Proot.rootfs(ctx)
         if (File(r, "bin/bash").exists()) {
             LogBus.log("· rootfs 已存在，跳过下载")
@@ -100,12 +109,17 @@ object Installer {
 
     // ---------- 步骤 3：部署脚本进容器 ----------
     fun installScripts(ctx: Context) {
-        val r = Proot.rootfs(ctx)
-        val dest = File(r, "opt/qqstack")
-        assetCopy(ctx, "qqstack", dest)
-        val rc = Proot.run(ctx, "chmod -R +x /opt/qqstack/scripts /opt/qqstack/patch 2>/dev/null; " +
-                "mkdir -p /opt/qqstack/run /tmp/.X11-unix; echo ok", tag = "seed")
-        LogBus.log(if (rc == 0) "✓ 部署脚本已就位 /opt/qqstack" else "✗ 脚本安装失败($rc)")
+        try {
+            val r = Proot.rootfs(ctx)
+            val dest = File(r, "opt/qqstack")
+            assetCopy(ctx, "qqstack", dest)
+            val rc = Proot.run(ctx, "chmod -R +x /opt/qqstack/scripts /opt/qqstack/patch 2>/dev/null; " +
+                    "mkdir -p /opt/qqstack/run /tmp/.X11-unix; echo ok", tag = "seed")
+            LogBus.log(if (rc == 0) "✓ 部署脚本已就位 /opt/qqstack" else "✗ 脚本安装失败($rc)")
+        } catch (e: Throwable) {
+            CrashHandler.record("installScripts", e)
+            LogBus.log("✗ 脚本安装异常：${e.message}")
+        }
     }
 
     // ---------- 步骤 4：系统包 + Node + 编 hook ----------
@@ -144,21 +158,43 @@ object Installer {
         return ok == 0
     }
 
-    /** QQ 必须是指定的 3.2.32-52194。source 可以是 URL，也可以是 /sdcard/... 的本地路径 */
-    fun installQQ(ctx: Context, source: String): Boolean {
-        val src = source.trim()
-        val script = """
-            if [ -f /opt/QQ/resources/app/package.json ]; then
-              echo "已有 QQ: $(python3 -c "import json;print(json.load(open('/opt/QQ/resources/app/package.json'))['version'])" 2>/dev/null)"
-              exit 0
-            fi
-            SRC="$src"
-            [ -z "${'$'}SRC" ] && { echo "NO_SOURCE"; exit 2; }
+    /** 自动下载 QQ：GitHub 上有归档仓库把官方包同步到了 Releases，不走 QQ 的 CDN */
+    fun autoDownloadQQ(ctx: Context): Boolean {
+        LogBus.log("↓ 尝试自动下载 QQ 3.2.32 arm64（GitHub 归档源）…")
+        val rc = Proot.run(ctx, """
             cd /tmp
-            case "${'$'}SRC" in
-              http*) curl -sL -o qq.pkg "${'$'}SRC" || { echo "下载失败"; exit 1; }; PKG=/tmp/qq.pkg ;;
-              *)     PKG=${'$'}SRC ;;
+            python3 /opt/qqstack/tools/fetch-qq.py --out /tmp/QQ.deb 2>&1 | tail -20
+            [ -s /tmp/QQ.deb ] || { echo "下载失败"; exit 1; }
+            echo "下载完成: $(du -h /tmp/QQ.deb | cut -f1)"
+        """.trimIndent(), tag = "qqdl")
+        return rc == 0
+    }
+
+    /** QQ 必须是指定的 3.2.32-52194。source 可以是 URL 或 /sdcard/... 的本地路径；留空则自动下载 */
+    fun installQQ(ctx: Context, source: String): Boolean {
+        if (Proot.run(ctx, "[ -f /opt/QQ/resources/app/package.json ] && exit 0 || exit 9",
+                tag = "qqchk") == 0) {
+            Proot.run(ctx, """echo "已有 QQ: $(python3 -c "import json;print(json.load(open('/opt/QQ/resources/app/package.json'))['version'])" 2>/dev/null)"""", tag = "qq")
+            return true
+        }
+        val src = source.trim()
+        if (src.isNotEmpty()) return installFromSource(ctx, src)
+        if (autoDownloadQQ(ctx)) return installFromSource(ctx, "/tmp/QQ.deb")
+        LogBus.log("✗ 自动下载没成功。手动方案：把 QQ_3.2.32_*_arm64_01.deb 放到手机，")
+        LogBus.log("  在上方填 /sdcard/Download/QQ.deb 后重跑部署。")
+        return false
+    }
+
+    private fun installFromSource(ctx: Context, src: String): Boolean {
+        val script = """
+            SRC="$src"
+            [ -z "$SRC" ] && { echo "NO_SOURCE"; exit 2; }
+            cd /tmp
+            case "$SRC" in
+              http*) curl -sL -o qq.pkg "$SRC" || { echo "下载失败"; exit 1; }; PKG=/tmp/qq.pkg ;;
+              *)     PKG=$SRC ;;
             esac
+            [ -f "${'$'}PKG" ] || { echo "文件不存在: ${'$'}PKG"; exit 1; }
             mkdir -p /opt
             case "${'$'}PKG" in
               *.deb)      dpkg -i "${'$'}PKG" 2>&1 | tail -3 || apt-get install -y -f 2>&1 | tail -3 ;;

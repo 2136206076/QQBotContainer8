@@ -41,6 +41,13 @@
         <Button android:id="@+id/btnVnc" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="扫码登录" />
     </LinearLayout>
 
+    <Button
+        android:id="@+id/btnCrash"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="查看崩溃日志"
+        android:textSize="12sp" />
+
     <HorizontalScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"

@@ -37,11 +37,12 @@ class MainActivity : AppCompatActivity() {
                 AlertDialog.Builder(this)
                     .setTitle("QQ 从哪来？")
                     .setMessage(
-                        "QQ 必须是 3.2.32-52194 arm64，官方 CDN 常对手机 IP 返 403，App 没法替你下载。\n\n" +
-                        "三选一：\n" +
-                        "1) 把你之前打包的 QQ-3.2.32-52194-arm64.tar.gz 放到手机，这里填 /sdcard/Download/QQ.tar.gz\n" +
-                        "2) 填一个能直下的 URL\n" +
-                        "3) 留空继续 —— 后面会跳过，等你有包了再重跑部署"
+                        "留空即可 —— App 会自动从 GitHub 上的 QQ 安装包归档仓库下载\n" +
+                        "3.2.32 arm64（约 205MB，不走 QQ 官方 CDN）。\n\n" +
+                        "如果自动下载失败（网络不通），再手动：\n" +
+                        "1) 把 QQ_3.2.32_*_arm64_01.deb 放到手机\n" +
+                        "2) 这里填 /sdcard/Download/QQ.deb\n" +
+                        "3) 或填一个能直下的 URL"
                     )
                     .setPositiveButton("留空继续") { _, _ -> fire(DeployService.DEPLOY, "") }
                     .setNegativeButton("取消", null)
@@ -62,8 +63,31 @@ class MainActivity : AppCompatActivity() {
             WebActivity.open(this, "扫码登录", "http://127.0.0.1:${Cfg.NOVNC_PORT}/vnc.html?autoconnect=true")
         }
         findViewById<Button>(R.id.btnKeep).setOnClickListener { showKeepAlive() }
+        findViewById<Button>(R.id.btnCrash).setOnClickListener { showCrash() }
 
         checkProot()
+        // 上次闪退过就把日志摊开，省得用户去文件里翻
+        val cf = CrashHandler.file()
+        if (cf.exists() && cf.length() > 0) {
+            tvLog.append("\n\n【检测到上次崩溃记录，已存到 ${cf.absolutePath}】\n")
+            tvLog.append(cf.readText().takeLast(2500))
+            tvLog.append("\n")
+        }
+    }
+
+    private fun showCrash() {
+        val cf = CrashHandler.file()
+        val txt = if (cf.exists() && cf.length() > 0) cf.readText() else "（暂无崩溃记录）"
+        AlertDialog.Builder(this)
+            .setTitle("崩溃日志 —— ${cf.absolutePath}")
+            .setMessage(txt.takeLast(6000))
+            .setNeutralButton("复制全部") { _, _ ->
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("crash", txt))
+                Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show()
+            }
+            .setPositiveButton("关闭", null)
+            .show()
     }
 
     private fun checkProot() {
